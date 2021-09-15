@@ -1,0 +1,771 @@
+---
+title: "Регрессионный анализ"
+author: "Evgeny Karpushkin"
+date: "`r format(Sys.Date(), format = '%d.%m.%Y')`"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+options(device = "cairo_pdf")
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=12, fig.height=8)
+```
+
+# Введение  
+Возможность заранее прогнозировать объем речного стока позволит существенно снизить затраты и повысить эффективность работы хозяйственных и природоохранных объектов. Одной из возможностей предсказать речной сток является анализ информации об осадках в зимний период. Интуитивно очевидно, что такая связь должна быть, но не менее важно (помимо подтверждения ее наличия) оценить силу этой связи и ее прогностические возможности.  
+Таким образом, нулевая гипотеза, рассматриваемая в этом анализе, была сформулирована так: объем речного стока не зависит от величины осадков в той же местности в зимний период. Далее, в случае отказа от нее, то есть подтверждения наличия связи, предполагается построить и оптимизировать линейную модель этой связи на основе экспериментальных данных, определить ее статистические характеристики и использовать ее для предсказаний.  
+Учебной задачей проекта является сравнительное изучение качества нескольких линейных моделей, полученных с помощью инструмента lm, а также ознакомление с инструментами высокого уровня, позволяющими решать те же задачи. 
+
+# Материалы и методы  
+
+Данные для анализа были загружены из пакета alr4 1.0.6 [1] (датасет water). В ходе анализа были использованы пакеты tidyverse 1.2.1 [2] (набор пакетов для основных операций по преобразованию и визуализации данных, который включает, в частности, пакеты ggplot2 3.2.1 [3], dplyr 0.8.3 [4] и tidyr 0.3.3 [5]), cowplot 1.0.0 [6] (организация нескольких графиков ggplot2 на рисунке), qqplotr 0.0.3 [7] (расширение ggplot2; для построения квантильных графиков), DAAG 1.22.1 [8] (для проведения кросс-валидации), GGally 1.4.0 [9] (расширение ggplot2; для попарного сравнения наборов данных) и knitr 1.24 [10] (оформление таблицы в отчете).  
+
+Анализ состоял из следующих основных шагов (детали их реализации приведены в разделе "Расчеты", а полученные результаты комментированы в разделе "Результаты и обсуждение"):  
+
+* загрузка данных  
+* разведочный анализ данных: ознакомление со структурой, проверка на пропуски, визуализация, проверка на нормальность, выявление выбросов и корреляций  
+*  построение полной линейной модели, предварительный анализ ее корректности  
+*  удаление коррелированных переменных, построение сокращенной модели, анализ ее корректности  
+*  проверка предсказательной способности моделей методом кросс-валидации
+
+# Расчеты
+
+В этом разделе будет приведен и прокомментирован полный код скрипта, использованного для анализа, а его консольный и графический вывод будет приведен и проанализирован в разделе Результаты и обсуждение. Для удобства понимания при обсуждении результатов частично приводится код, формирующий соответствующий вывод.
+
+```{r, eval = FALSE}
+# Предварительные операции.----------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------
+
+# сохраняем текущую рабочую папку и устаналиваем рабочую папку курса
+# для воспроизведения скрипта при проверке нужно установить свою рабочую директорию!
+old_dir <- getwd()
+setwd("C:/Users/Evgeny/Dropbox/Coursera/RStat2019")
+
+library(tidyverse)                # набор пакетов для анализа и визуализации данных
+library(cowplot)                  # несколько графиков на одном поле
+library(alr4)                     # содержит датасет water
+library(DAAG)                     # cross-validation
+library(qqplotr)                  # qqplot в стиле ggplot2
+library(GGally)                   # визуализация парного сравнения переменных
+library(knitr)                    # формирование таблиц для отчета
+
+# установка общей темы для рисунков
+old <- theme_get()
+my_theme <-  theme_bw() +
+  theme(axis.text = element_text(size = 12)) +
+  theme(plot.title = element_text(size = 18, hjust = 0.5)) +
+  theme(axis.title = element_text(size = 16), legend.position = "none")
+theme_set(my_theme)
+
+
+
+# Загрузка, изучение структуры и диагностика исходных данных.-------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------------------------------
+
+# исходные данные для анализа находятся в датасете water
+data(water)                       
+
+# изучаем структуру датасета
+str(water)
+head(water)
+
+# проверка на пропущенные значения
+colSums(is.na(summary(water)))
+
+# проверка на пропуск года
+(max(water$Year) - min(water$Year)) == nrow(water) - 1
+is.element(FALSE, seq(min(water$Year), max(water$Year)) %in% water$Year)
+
+
+
+# Анализ распределения предикторов по диаграммам "ящик с усами" и определение отскоков.-----------------------------------
+# Для облегчения этих (и некоторых дальнейших) операций создан дополнительный датафрейм----------------------------------- 
+# с исходными данными в длинном формате (water_long),--------------------------------------------------------------------- 
+# в который добавлены значения стандартизованных величин предикторов и отклика.-------------------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+
+# переводим данные в длинный формат и добавляем колонку стандартизованных значений
+water_long <- water %>% gather("APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM", key = "key", value = "value") %>% group_by(key) %>% mutate (scale_value = scale(value))
+
+# диаграммы для исходных данных
+gg_1a <- ggplot(water_long %>% filter(key != "BSAAM"), aes(x = key, y = value)) +
+  geom_boxplot() +
+  labs(x = "Location", y = "Precipitation") + 
+  annotate("text", label = "a) Raw predictors", x = 0.5, y = 42, size = 5, colour = "red", hjust = "left")
+
+# критическое значение t-статистики для числа наблюдений из датасета
+t_crit <- qt(.975, df = nrow(water) - 1)
+
+# диаграммы для автошкалированных данных
+gg_1b <- ggplot(water_long %>% filter(key != "BSAAM"), aes(x = key, y = scale_value)) +
+  geom_boxplot() +
+  labs(x = 'Location', y = 'Std. precipitation') +
+  scale_y_continuous(limits = c(-2.5, 4.4)) +
+  geom_hline(yintercept = t_crit, linetype = 2) +
+  geom_hline(yintercept = -t_crit, linetype = 2) +
+  annotate("text", label = "b) Autoscaled predictors", x = 0.5, y = 4.2, size = 5, colour = "red", hjust = "left")
+
+# общий заголовок
+gg_title_1 <- ggdraw() + draw_label("Fig. 1 Distribution of values of predictors.", size = 18)
+
+# формируем общий рис. 1
+# здесь и далее - объекты, которые объединяются с помощью plot_grid, называются gg_XY,
+# заголовок - gg_title_X, где x - номер рисунка, Y - идентификатор графика на рисунке
+plot_grid(gg_title_1, gg_1a, gg_1b, nrow = 3, rel_heights = c(0.15, 1, 1))
+
+# создаем график для парного сравнения предикторов
+ggpairs(water[ , colnames(water) %in% c("APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM")], lower = list(continuous = "smooth_loess"), title = "Fig. 2. Pairwise comparison of parameters.", axisLabels = "none")
+
+# создаем вектор с годом, когда наблюдались выбросы (по одному значению на КАЖДЫЙ отскок!)
+outliers_y <- water_long$Year[water_long$scale_value > t_crit & water_long$key != "BSAAM"]
+table(outliers_y)
+
+# создаем датафрейм, в котором будут ВСЕ значения параметров в годы, когда был хоть один отскок
+data.frame(water_long[water_long$Year %in% outliers_y, ] %>% select(-value) %>% spread(key = key, value = scale_value)) %>% select("Year", "APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM") %>% round(digits = 2)
+
+
+
+# Построение аременных рядов для стандартизованных предикторов.-----------------------------------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+ggplot(water_long %>% filter(key != "BSAAM"), aes(x = Year, y = scale_value), color = "black") +
+  geom_line() + geom_point() + geom_hline(yintercept = t_crit, linetype = 2) +
+  facet_wrap( ~ key, ncol = 3, scales = "free") +
+  labs(title = "Fig. 3 Time series for autoscaled predictors", y = "Std. precipitation")
+
+
+
+# Графики для разведочного анализа переменной отклика.--------------------------------------------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+# заголовок рисунка
+gg_title_4 <- ggdraw() + draw_label("Fig. 4 Distributions for response variable.", size = 18)
+
+# диаграмма Кливленда = временная серия для отклика
+gg_4a <- ggplot(water_long %>% filter(key == "BSAAM"), aes(x = Year, y = scale_value)) +
+  geom_point() + geom_line() +
+  labs(x = 'Year', y = 'Std. runoff') +
+  annotate("text", label = "a) time series", x = 1947, y = 2.6, size = 6, colour = "red", hjust = "left")
+
+# "ящик" для отклика
+gg_4b <- ggplot(water_long %>% filter(key == "BSAAM"), aes(x = key, y = scale_value)) +
+  geom_boxplot() +
+  geom_hline(yintercept = t_crit, linetype = 2) +
+  labs(x = '', y = 'Std. runoff') +
+  annotate("text", label = "b) boxplot", x = 0.5, y = 2.6, size = 6, colour = "red", hjust = "left")
+
+# проверка на нормальность для отклика
+gg_4c <- ggplot(water_long %>% filter(key == "BSAAM"), aes(sample = scale_value), color = "black") +
+  stat_qq_point() +
+  stat_qq_line() +
+  stat_qq_band() +
+  annotate("text", label = "c) quantile-quantile plot", x = -2.5, y = 2.5, size = 6, colour = "red", hjust = "left")
+
+# создаем окончательный рис. 4
+plot_grid(gg_title_4, plot_grid(gg_4a, gg_4b, ncol = 2, rel_widths = c(1, 1)), gg_4c, nrow = 3, rel_heights = c(0.15, 1, 1))
+
+
+
+# Анализ корреляции переменной отклика с каждым из предикторов.----------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------
+
+# формируем данные для таблицы статистики корреляций
+cor_stat <- data.frame(param = character(0), corr = numeric(0), t = numeric(0), p = integer(0))
+for (i in 2:7) {
+  temp <- cor.test(water[, 8], water[, i], method = 'pearson')
+  cor_stat <- rbind.data.frame(cor_stat, cbind.data.frame(param = colnames(water)[i], corr = temp$estimate, t = temp$statistic, p = temp$p.value))
+}
+rownames(cor_stat) <- cor_stat$param
+cor_stat <- signif(cor_stat[, 2:4], digits = 4)
+kable(cor_stat, caption = "Table 1. Correlations of response with predictors")
+
+
+
+# Функция для вывода диагностик модели типа lm. -------------------------------------------------------------------------
+# По умолчанию выводятся только диагностические графики, ----------------------------------------------------------------
+# опционально можно также вывести таблицу отскакивающих расстояний Кука и таблицу коэффициентов модели.------------------
+# -----------------------------------------------------------------------------------------------------------------------
+
+model.diag <- function(x, fig_n = 999, printing = FALSE) # x - объект lm, fig_n - номер рисунка (в подписи),
+                                                         # printing - печатать ли таблицы
+{
+  # диагностический датафрейм для модели x
+  x_diag <- fortify(x)
+  x_diag_long <- x_diag %>% mutate(Year = water$Year) %>% gather(colnames(x_diag)[colnames(x_diag) != "Year"], key = "key", value = "value")
+  
+  # критическое значение расстояния Кука
+  cooksd_crit <- 4 / (nrow(x_diag) - length(coef(x_diag)))
+  
+  # таблица отскакивающих расстояний Кука
+  outliers_cooks <- x_diag_long %>% filter(key == ".cooksd") %>% filter (value > cooksd_crit) %>% select(-key) %>% transmute(Year = Year, .cooksd = value)
+  
+  
+  # график расстояния Кука
+  gg_1 <- ggplot(x_diag, aes(x = water$Year, y = .cooksd)) +
+    geom_bar(stat = 'identity') + coord_cartesian(ylim = c(0, max(x_diag$.cooksd))) +
+    geom_hline(yintercept = cooksd_crit, linetype = 2) +
+    labs(x = "Year")
+  
+  # график остатков от предсказанных значений  
+  gg_2 <- ggplot(data = x_diag, aes(x = .fitted, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)
+  
+  # графики стандартизированных остатков от значений предикторов
+  gg_3 <- ggplot(data = x_diag, aes(x = water$APMAM, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'APMAM')
+  gg_4 <- ggplot(data = x_diag, aes(x = water$APSAB, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'APSAB')
+  gg_5 <- ggplot(data = x_diag, aes(x = water$APSLAKE, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'APSLAKE')
+  gg_6 <- ggplot(data = x_diag, aes(x = water$OPBPC, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'OPBPC') 
+  gg_7 <- ggplot(data = x_diag, aes(x = water$OPRC, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'OPRC')
+  gg_8 <- ggplot(data = x_diag, aes(x = water$OPSLAKE, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'OPSLAKE')
+  
+  # квантильный график стандартизированных отклонений
+  gg_9 <- ggplot(data.frame(x_diag), aes(sample = .stdresid), color = "black") +
+    stat_qq_point(distribution = "norm") +
+    stat_qq_line(distribution = "norm") +
+    stat_qq_band(distribution = "norm")
+  
+  # вызов модели
+  call <- paste(formula(x)[2], formula(x)[3], sep=' ~ ')
+  # скорректированный коэффициент детерминации
+  adj_r2 <- summary(x)$adj.r.squared
+  # степени свободы остатков
+  df <- summary(x)$df[2]
+  # стандартное отклонение
+  sigma <- summary(x)$sigma
+  
+  # формируем рисунок и заголовки
+  composite <- plot_grid(gg_1, gg_2, gg_9, gg_3, gg_4, gg_5, gg_6, gg_7, gg_8, ncol = 3)
+  title_1 <- ggdraw() + draw_label(paste("Fig. ", fig_n, " Model: ", call, sep = ""), size = 15)
+  title_2 <- ggdraw() + draw_label(paste("adj. r-sq. = ", round(adj_r2, digits = 3), "; s = ", round(sigma, digits = 0), " (df = ", df, ")",   sep = ""), size = 10, fontface = "bold", color = "red")
+  res <- plot_grid(title_1, title_2, composite, nrow = 3, rel_heights = c(0.15, 0.12, 3))
+  
+  if (printing == TRUE) {
+    # отскакивающие расстояния Кука
+    print("Table of Cook's distance outliers")
+    print.data.frame(outliers_cooks, row.names = FALSE)
+    # коэффициенты модели
+    print("Table of model coefficients")
+    print(round(summary(x)$coef, digits = 3))
+  }
+  
+  return(res)
+}
+
+
+
+
+# Построение полной и нулевой моделей и их диагностических графиков.------------------------------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+
+model_full <- lm(BSAAM ~ APMAM + APSAB + APSLAKE + OPBPC + OPRC + OPSLAKE, data = water)
+model.diag(model_full, fig_n = 5, printing = TRUE)
+model_null <- lm(BSAAM ~ 1, data = water)
+model.diag(model_null, fig_n = 6, printing = FALSE)
+
+
+
+# Сокращенная модель из полной по фактору инфляции дисперсии и построение ее диагностики.---------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+vif(model_full)
+model_A <- update(model_full, . ~ . -OPSLAKE)
+
+vif(model_A)
+model_A <- update(model_A, . ~ . -APSAB)
+
+vif(model_A)
+model_A <- update(model_A, . ~ . -OPRC)
+
+vif(model_A)
+model_A <- update(model_A, . ~ . -APMAM)
+
+vif(model_A)
+model.diag(model_A, 7)
+
+
+
+# Построение и диагностика моделей, включающих один из ранее исключенных предикторов.--------------------------------------
+# -------------------------------------------------------------------------------------------------------------------------
+
+model_B <- update(model_A, . ~ . + OPRC)
+model.diag(model_B, 8, FALSE)
+
+model_C <- update(model_A, . ~ . + OPSLAKE)
+model.diag(model_C, 9, FALSE)
+
+
+
+# Построение оптимальной линейной модели по критерию Акаике.--------------------------------------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+model_AIC <- step(object = model_null, scope = model_full$call, direction = "both", trace = 100, k = 2)
+model.diag(model_AIC, 10, FALSE)
+
+
+
+# Кросс-валидация моделей и график результатов.---------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+model_null_cv <- cv.lm(data = water, form.lm = formula(BSAAM ~ 1), m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_91 <- ggplot(data = model_null_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_null", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_A_cv <- cv.lm(data = water, form.lm = model_A$call, m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_92 <- ggplot(data = model_A_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_A", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_B_cv <- cv.lm(data = water, form.lm = model_B$call, m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_93 <- ggplot(data = model_B_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_B", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_C_cv <- cv.lm(data = water, form.lm = model_C$call, m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_94 <- ggplot(data = model_C_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_C", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_AIC_cv <- cv.lm(data = water, form.lm = formula(model_AIC$call), m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_95 <- ggplot(data = model_AIC_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_AIC", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_full_cv <- cv.lm(data = water, form.lm = formula(model_full$call), m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_96 <- ggplot(data = model_full_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_full", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+gg_title_9 <- ggdraw() + draw_label("Fig. 11 Cross-validation of the models.", size = 18)
+
+plot_grid(gg_title_9, plot_grid(gg_91, gg_92, gg_93, gg_94, gg_95, gg_96, ncol = 2), ncol = 1, rel_heights = c(0.15, 1))
+
+
+
+# Создание сводной таблицы характеристик моделей.--------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------------------------------
+
+full_sum <- cbind(adj.r.sq = summary(model_full)$adj.r.squared, model.s = summary(model_full)$sigma, model.df = summary(model_full)$df[2], cv.s = sqrt(attributes(model_full_cv)$ms))
+A_sum <- cbind(adj.r.sq = summary(model_A)$adj.r.squared, model.s = summary(model_A)$sigma, model.df = summary(model_A)$df[2], cv.s = sqrt(attributes(model_A_cv)$ms))
+B_sum <- cbind(adj.r.sq = summary(model_B)$adj.r.squared, model.s = summary(model_B)$sigma, model.df = summary(model_B)$df[2], cv.s = sqrt(attributes(model_B_cv)$ms))
+C_sum <- cbind(adj.r.sq = summary(model_C)$adj.r.squared, model.s = summary(model_C)$sigma, model.df = summary(model_C)$df[2], cv.s = sqrt(attributes(model_C_cv)$ms))
+null_sum <- cbind(adj.r.sq = summary(model_null)$adj.r.squared, model.s = summary(model_null)$sigma, model.df = summary(model_null)$df[2], cv.s = sqrt(attributes(model_null_cv)$ms))
+AIC_sum <- cbind(adj.r.sq = summary(model_AIC)$adj.r.squared, model.s = summary(model_AIC)$sigma, model.df = summary(model_AIC)$df[2], cv.s = sqrt(attributes(model_AIC_cv)$ms))
+
+overall <- (rbind(null_sum, A_sum, B_sum, C_sum, AIC_sum, full_sum))
+rownames(overall) <- c("Null", "A", "B", "C", "AIC", "Full")
+colnames(overall) <- c("Adj. r-squared", "Model MSe", "Model df", "Prediction MSe")
+
+kable(overall, caption = "Table 2. Parameters of the built models.")
+
+
+
+# завершение работы, возвращаем старые значения измененных параметров-----------------------------------------------------
+# ------------------------------------------------------------------------------------------------------------------------
+
+setwd(old_dir)
+theme_set(old)
+```
+
+# Результаты и обсуждение
+
+## Описание данных
+```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
+old_dir <- getwd()
+setwd("C:/Users/Evgeny/Dropbox/Coursera/RStat2019")
+library(tidyverse)                # набор пакетов для анализа и визуализации данных
+library(cowplot)                  # несколько графиков на одном поле
+library(alr4)                     # содержит датасет water
+library(DAAG)                     # cross-validation
+library(qqplotr)                  # qqplot in ggplot2
+library(GGally)                   # визуализация парного сравнения переменных
+library(gridExtra)                # включение объектов в график
+library(knitr)
+old <- theme_get()
+my_theme <-  theme_bw() +
+  theme(axis.text = element_text(size = 12)) +
+  theme(plot.title = element_text(size = 18, hjust = 0.5)) +
+  theme(axis.title = element_text(size = 16), legend.position = "none")
+theme_set(my_theme)
+data(water)
+
+model.diag <- function(x, fig_n = 999, printing = FALSE) # x - объект lm, fig_n - номер рисунка (в подписи),
+                                                         # printing - печатать ли таблицы
+{
+  # диагностический датафрейм для модели x
+  x_diag <- fortify(x)
+  x_diag_long <- x_diag %>% mutate(Year = water$Year) %>% gather(colnames(x_diag)[colnames(x_diag) != "Year"], key = "key", value = "value")
+  
+  # критическое значение расстояния Кука
+  cooksd_crit <- 4 / (nrow(x_diag) - length(coef(x_diag)))
+  
+  # таблица отскакивающих расстояний Кука
+  outliers_cooks <- x_diag_long %>% filter(key == ".cooksd") %>% filter (value > cooksd_crit) %>% select(-key) %>% transmute(Year = Year, .cooksd = value)
+  
+  
+  # график расстояния Кука
+  gg_1 <- ggplot(x_diag, aes(x = water$Year, y = .cooksd)) +
+    geom_bar(stat = 'identity') + coord_cartesian(ylim = c(0, max(x_diag$.cooksd))) +
+    geom_hline(yintercept = cooksd_crit, linetype = 2) +
+    labs(x = "Year")
+  
+  # график остатков от предсказанных значений  
+  gg_2 <- ggplot(data = x_diag, aes(x = .fitted, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)
+  
+  # графики стандартизированных остатков от значений предикторов
+  gg_3 <- ggplot(data = x_diag, aes(x = water$APMAM, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'APMAM')
+  gg_4 <- ggplot(data = x_diag, aes(x = water$APSAB, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'APSAB')
+  gg_5 <- ggplot(data = x_diag, aes(x = water$APSLAKE, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'APSLAKE')
+  gg_6 <- ggplot(data = x_diag, aes(x = water$OPBPC, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'OPBPC') 
+  gg_7 <- ggplot(data = x_diag, aes(x = water$OPRC, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'OPRC')
+  gg_8 <- ggplot(data = x_diag, aes(x = water$OPSLAKE, y = .stdresid)) +
+    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'OPSLAKE')
+  
+  # квантильный график стандартизированных отклонений
+  gg_9 <- ggplot(data.frame(x_diag), aes(sample = .stdresid), color = "black") +
+    stat_qq_point(distribution = "norm") +
+    stat_qq_line(distribution = "norm") +
+    stat_qq_band(distribution = "norm")
+  
+  # вызов модели
+  call <- paste(formula(x)[2], formula(x)[3], sep=' ~ ')
+  # скорректированный коэффициент детерминации
+  adj_r2 <- summary(x)$adj.r.squared
+  # степени свободы остатков
+  df <- summary(x)$df[2]
+  # стандартное отклонение
+  sigma <- summary(x)$sigma
+  
+  # формируем рисунок и заголовки
+  composite <- plot_grid(gg_1, gg_2, gg_9, gg_3, gg_4, gg_5, gg_6, gg_7, gg_8, ncol = 3)
+  title_1 <- ggdraw() + draw_label(paste("Fig. ", fig_n, " Model: ", call, sep = ""), size = 15)
+  title_2 <- ggdraw() + draw_label(paste("adj. r-sq. = ", round(adj_r2, digits = 3), "; s = ", round(sigma, digits = 0), " (df = ", df, ")",   sep = ""), size = 10, fontface = "bold", color = "red")
+  res <- plot_grid(title_1, title_2, composite, nrow = 3, rel_heights = c(0.15, 0.12, 3))
+  
+  if (printing == TRUE) {
+    # отскакивающие расстояния Кука
+    print("Table of Cook's distance outliers")
+    print.data.frame(outliers_cooks, row.names = FALSE)
+    # коэффициенты модели
+    print("Table of model coefficients")
+    print(round(summary(x)$coef, digits = 3))
+  }
+  
+  return(res)
+}
+
+
+```
+
+Согласно описанию датасета water [11, с. 54], переменная Year содержит год наблюдения, переменная BSAAM содержит величину стока (в акро-футах), а остальные шесть переменных (APMAM, APSAB, APSLAKE, OPBPC, OPRC, OPSLAKE) содержат величины зимних осадков в различных точках местности. О географической близости точек наблюдения осадков и стока информации нет.
+```{r, echo = TRUE}
+str(water)
+head(water)
+```
+
+Загруженные данные имеют ожидаемую структуру: это таблица, содержащая 8 числовых переменных (столбцы) для 43 наблюдений (строки). 
+```{r, echo = TRUE}
+colSums(is.na(summary(water)))
+(max(water$Year) - min(water$Year)) == nrow(water) - 1
+is.element(FALSE, seq(min(water$Year), max(water$Year)) %in% water$Year)
+```
+
+Пропущенных значений в датасете нет. Размах данных в столбце Year (разница между максимальным и минимальным значениями) ровно на единицу меньше количества строк в датасете, причем каждое целое число из последовательности между первым и последним годами выборки встречается в столбце данных Year. Можно заключить поэтому, что все переменные измерены для каждого года из анализируемого диапазона, причем каждому году соответствует строго одно наблюдение.  
+
+## Разведочный анализ
+Цели разведочного анализа данных:
+
+* проанализировать распределение переменных, выявить возможные ошибки (аномальные значения)
+* проанализировать корреляции между переменными
+* сделать выводы о применимости линейных моделей к анализу данных
+  + следует ли отвергнуть или принять нулевую гипотезу о корреляции между откликом и предикторами?
+  + выполняются ли условия применимости линейных моделей для имеющихся данных?
+
+```{r, echo = FALSE, warning = FALSE}
+water_long <- water %>% gather("APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM", key = "key", value = "value") %>% group_by(key) %>% mutate (scale_value = scale(value))
+ggbox_1a <- ggplot(water_long %>% filter(key != "BSAAM"), aes(x = key, y = value)) +
+  geom_boxplot() +
+  labs(x = "Location", y = "Precipitation") + 
+  annotate("text", label = "a) Raw predictors", x = 0.5, y = 42, size = 5, colour = "red", hjust = "left")
+t_crit <- qt(.975, df = nrow(water) - 1)
+ggbox_1b <- ggplot(water_long %>% filter(key != "BSAAM"), aes(x = key, y = scale_value)) +
+  geom_boxplot() +
+  labs(x = 'Location', y = 'Std. precipitation') +
+  scale_y_continuous(limits = c(-2.5, 4.4)) +
+  geom_hline(yintercept = t_crit, linetype = 2) +
+  geom_hline(yintercept = -t_crit, linetype = 2) +
+  annotate("text", label = "b) Autoscaled predictors", x = 0.5, y = 4.2, size = 5, colour = "red", hjust = "left")
+gg_title_1 <- ggdraw() + draw_label("Fig. 1 Distribution of values of predictors.", size = 18)
+plot_grid(gg_title_1, ggbox_1a, ggbox_1b, nrow = 3, rel_heights = c(0.15, 1, 1))
+```
+
+Распределение значений предикторов (рис. 1a) показывает, что для первых трех из них значения в среднем ниже, чем для последних трех. Первые три предиктора находятся в переменных, имена которых начинаются с A, а имена последних трех начинаются с O. Возможно, это говорит о географическом положении точек сбора данных об осадках, и эти переменные нужно проверить на пространственную автокорреляцию.  
+Визуализированные точками отскоки расположены в верхней части диаграммы, а в нижней их нет, то есть данные содержат несколько экстремально высоких значений, а выбросы вниз отсутствуют. Это подтверждает и анализ стандартизированных значений предикторов (рис. 1b), где видно, что значения, по модулю превышающие соответствующее критическое значение $t$-статистики (показана горизонтальной штриховой линией) имеются только в положительной части диаграммы. Наличие такого правого хвоста у данных хорошо видно на рис. 2.   
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+ggpairs(water[ , colnames(water) %in% c("APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM")], lower = list(continuous = "smooth_loess"), title = "Fig. 2. Pairwise comparison of predictors.", axisLabels = "none")
+```
+
+Рис. 2, компактно визуализирует распределения и связи между переменных. Каждая строка и каждый столбец таблицы соответствуют одной из переменных (переменная-отклик помещена в крайний правый столбец и крайнюю нижнюю строку). В правом верхнем углу таблицы приведены значения коэффициентов корреляции между соответствующими парами переменных [12, c. 22], в нижней части таблицы даны диаграммы рассеяния для соответствующих пар переменных и линия тренда, полученная по алгоритму LOESS [12, с. 276], а по диагонали таблицы изображены плотности распределения каждой переменной. Анализ рис. 2 позволяет сделать следующие выводы:  
+
+* Для всех переменных (и предикторов, и отклика) на графиках плотности распределения наблюдается длинный правый хвост.
+* Переменные с именами A... попарно сильно скоррелированы (коэффициент корреляции > 0.81), аналогично, сильно скоррелированы переменные O... ($r$ > 0.85), а корреляция между переменными A... и O... практически отсутствует ($r$ < 0.16). 
+* Переменная отклика сильнее скоррелирована с переменными O... ($r$ 0.88-0.94), чем с переменными A... ($r$ 0.18-0.25).
+
+Так как представленные данные являются ежегодными, маловероятно, что наличие аномально высоких значений связано с ошибками сбора данных. Скорее всего, они представляют собой редкие наблюдения (в данном случае - аномально снежные зимы). Разумно оценить, как вели себя остальные переменные в годы, для которых некоторые переменные принимали аномальные значения. 
+
+```{r, echo = TRUE}
+outliers_y <- water_long$Year[water_long$scale_value > t_crit & water_long$key != "BSAAM"]
+table(outliers_y)
+data.frame(water_long[water_long$Year %in% outliers_y, ] %>% select(-value) %>% spread(key = key, value = scale_value)) %>% select("Year", "APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM") %>% round(digits = 2)
+```
+
+Видно, что наиболее "подозрительные" годы - 1969 и 1982 (аномальны значения 3 из 6 переменных), тогда как в остальных случаях отскок только один. Единичные отскоки (в 1963, 1976, 1983 и 1986 гг.) не очень значительны - стандартизированное значение отскакивающей переменной от 2.03 до 2.32 при $t_{crit}$ = 2.02 для $\alpha$ = 0.05, df = 42). С другой стороны, в 1969 и 1983 годах, когда было зафиксировано несколько аномальных значений, они согласованно наблюдались для переменных, между которыми была ранее обнаружена значимая корреляция; таким образом, их следует считать природными аномалиями, а не ошибками сбора данных. Анализ значений отклика (последний столбец) показывает, что именно в 1969 и 1983 годах аномальные величины осадков привели к величине годового стока, выходящей за пределы доверительного интервала.  
+С точки зрения будущего построения предсказательной модели включение аномальных данных в анализ может привести к некоторой потере точности предсказаний для обычных уровней осадков, но, с другой стороны, позволит провести обоснованную оценку в аномально снежные годы. Исключение аномальных данных по осадкам из модели будет иметь противоположные эффекты: вероятно, точность предсказания "обычных" значений повысится, но предсказание аномальных значений будет в этом случае представлять собой экстраполяцию, что может привести к потере точности. Выгоднее всего было бы построить отдельную модель для аномально снежных зим, но имеющихся данных для этого недостаточно.     
+Последний вопрос, который осталось рассмотреть при разведочном анализе предикторов - их возможная временная автокорреляция, которой естественно ожидать для временных серий данных. Однако наши данные представляют собой годовые наблюдения, причем в начале каждого цикла сбора данных состояние системы "обнуляется" (снежный покров полностью тает к концу сезона). Заметная временная автокорреляция, с учетом природы данных, могла бы наблюдаться, если бы рассматривался регион с круглогодичным снежным покровом, и величина стока могла бы определяться осадками не только в последнюю, но и более ранние зимы. Прямых данных об этом для региона Owens Valley, где были собраны данные [11, с. 54], найти не удалось, но по имеющимся данным о среднемесячной температуре в ряде городов Южной Калифорнии [13] можно косвенно заключить, что такая ситуация маловероятна. Это подтверждают и временные серии изменения предикторов (рис. 3). Отметим, что приведенные графики фактически представляют собой точечные диаграммы Кливленда с переменой горизонтальной и вертикальной осей. Исходя из интерпретации этих диаграмм можно дополнительно подтвердить данные анализа рис. 2, что наиболее подозрительными отскоками являются точки для 1969 и 1982 годов.  
+
+```{r, echo = FALSE, warning = FALSE}
+ggplot(water_long %>% filter(key != "BSAAM"), aes(x = Year, y = scale_value), color = "black") +
+  geom_line() + geom_point() + geom_hline(yintercept = t_crit, linetype = 2) +
+  facet_wrap( ~ key, ncol = 3, scales = "free") +
+  labs(title = "Fig. 3 Time series for autoscaled predictors", y = "Std. precipitation")
+```
+
+Наконец, рассмотрим распределение отклика (переменная BSAAM в исходных данных) с точки зрения применимости в построении линейной модели. Видно что, заметной временной автокорреляции в отклике не обнаруживается (рис. 4a), в данных имеется лишь пара значений, стандартизированная величина которых немного превышает $t_{crit}$ (2.01) (рис. 4a) и, несмотря на выраженную асимметрию данных (несовпадение медианы и среднего значения, рис. 4b), отклонения от нормальности находятся в пределах доверительного интервала для $\alpha =  0.95$ (рис. 4c).  
+
+```{r, echo = FALSE, warning = FALSE}
+gg_title_4 <- ggdraw() + draw_label("Fig. 4 Distributions for response variable.", size = 18)
+gg_4a <- ggplot(water_long %>% filter(key == "BSAAM"), aes(x = Year, y = scale_value)) +
+  geom_point() + geom_line() +
+  labs(x = 'Year', y = 'Std. runoff') +
+  annotate("text", label = "a) time series", x = 1947, y = 2.6, size = 6, colour = "red", hjust = "left") +
+  geom_hline(yintercept = t_crit, linetype = 2)
+gg_4b <- ggplot(water_long %>% filter(key == "BSAAM"), aes(x = key, y = scale_value)) +
+  geom_boxplot() +
+  geom_hline(yintercept = t_crit, linetype = 2) +
+  labs(x = '', y = 'Std. runoff') +
+  annotate("text", label = "b) boxplot", x = 0.5, y = 2.6, size = 6, colour = "red", hjust = "left")
+gg_4c <- ggplot(water_long %>% filter(key == "BSAAM"), aes(sample = scale_value), color = "black") +
+  stat_qq_point() +
+  stat_qq_line() +
+  stat_qq_band() +
+  annotate("text", label = "c) quantile-quantile plot", x = -2.5, y = 2.5, size = 6, colour = "red", hjust = "left")
+plot_grid(gg_title_4, plot_grid(gg_4a, gg_4b, ncol = 2, rel_widths = c(1, 1)), gg_4c, nrow = 3, rel_heights = c(0.15, 1, 1))
+```
+
+Дополнительно проанализируем значимость выявленных на рис. 2 корреляций переменной отклика с каждым из предикторов (табл. 1). Как видно из представленных в таблице данных, корреляция между тремя из предикторов и переменной отклика значимая ($p < 0.0001$). Таким образом, исходную нулевую гипотезу о независимости стока от осадков следует отвергнуть. 
+
+```{r, echo = FALSE, warning = FALSE}
+cor_stat <- data.frame(param = character(0), corr = numeric(0), t = numeric(0), p = integer(0))
+for (i in 2:7) {
+  temp <- cor.test(water[, 8], water[, i], method = 'pearson')
+  cor_stat <- rbind.data.frame(cor_stat, cbind.data.frame(param = colnames(water)[i], corr = temp$estimate, t = temp$statistic, p = temp$p.value))
+}
+rownames(cor_stat) <- cor_stat$param
+cor_stat <- signif(cor_stat[, 2:4], digits = 4)
+kable(cor_stat, caption = "Table 1. Correlations of response with predictors")
+```
+
+Обобщая результаты разведочного анализа, заключаем, что данные пригодны для построения линейной модели, так как удовлетворяют основным условиям ее применимости (статистически значимая линейная связь между некоторыми предикторами и откликом; независимость наблюдений; отсутствие коллинеарности некоторых из предикторов).  
+
+## Построение линейных моделей
+Множественные линейные модели можно строить различными способами [14], причем последовательный перебор моделей можно делать как вручную, так и автоматизированно: 
+
+* начиная с модели без предикторов, добавлять их последовательно по одному и анализировать, насколько улучшается качество модели 
+* начиная с полной модели, удалять последовательно наименее значимые или наиболее скоррелированные предикторы, пока при удалении очередного предиктора качество модели не начнет ухудшаться
+* провести полный перебор всех возможных моделей и сравнение их параметров
+
+В нашем случае выбор подхода является во многом делом вкуса, так как объем данных не очень велик, а для полного перебора всех комбинаций 6 предикторов необходимо 64 модели, что легко осуществимо на современном компьютере. Тем не менее, для иллюстрации принципов выбора модели будем конструировать их вручную. 
+Для проверки качества построенной модели можно использовать широкий спектр диагностик, например, коэффициент детерминации, статистика значимости модели Фишера, статистика значимости параметров модели Стьюдента, анализ распределения остатков и т. д. [12]. В данном анализе были использованы: скорректированный коэффициент детерминации, среднеквадратичное отклонение модели, диаграмма расстояний Кука, квантильное распределение стандартных остатков модели и графики стандартных остатков от предсказанных значений и от значений каждой переменной. Это позволило выводить результаты тестирования модели в достаточно компактной форме (см., например, рис. 5, где показаны результаты для полной модели, включающей все предикторы). 
+
+```{r, echo = TRUE, warning = FALSE}
+model_full <- lm(BSAAM ~ APMAM + APSAB + APSLAKE + OPBPC + OPRC + OPSLAKE, data = water)
+model.diag(model_full, fig_n = 5, printing = TRUE)
+```
+
+Из рис. 5 и диагностических таблиц видно, что полная модель:
+
+* показывает высокий коэффициент детерминации ($r^2$ 0.912) и небольшую стандартную ошибку моделирования (7556 при медиане отклика 69177)
+* содержит лишь три наблюдения, которые, исходя из расстояния Кука, избыточно влияют на модель (левый верхний график на рис. 5)
+  + эти отскоки - данные для 1957, 1976 и 1983 года; интересно, что наиболее аномальные наборы (1969 и 1982 годы) полную модель не переобучают, а набор переменных для 1957 года вообще не содержит ни одного аномального значения предикторов 
+* характеризуется близким к нормальному распреледением остатков (правый верхний график на рис. 5), а их зависимость от предсказанных значений не выявляет заметной гетероскедастичности или необъясненных паттернов (центральный верхний график на рис. 5)  
+* практически не показывает гетероскедастичности остатков или закономерных паттернов в зависимости от значений предикторов (средний и нижний ряды на рис. 5)
+* включает три значимых коэффициента (при OPRC и OPSLAKE, а также свободный член), один коэффициент, значимость которого сомнительна (при APSLAKE) и три незначимых предиктора
+
+В то же время, выявленные ранее мультиколлинеарность предикторов, слабая корреляция отклика с некоторыми из них (рис. 2) и сравнительно небольшое количество наблюдений (примерно 6 на параметр полной модели) указывают, что построенная модель может не быть оптимальной. Проанализируем, какие предикторы модели могут быть избыточными, исходя из фактора инфляции дисперсии [12, с. 216]. Но перед этим в качестве второго крайнего случая построим модель вообще без предикторов (рис. 6).
+
+```{r, echo = FALSE, warning = FALSE}
+model_null <- lm(BSAAM ~ 1, data = water)
+model.diag(model_null, fig_n = 6, printing = FALSE)
+```
+
+Из рис. 6 видно, как проявляется сильная недоопределенность модели для анализируемых данных:
+
+* диаграмма расстояний Кука принципиально не изменяется (максимальные значения соответствуют другим годам, но величины остаются примерно такими же)
+* распределение остатков модели лишь немного сильнее отклоняется от нормального, но остается в пределах доверительного интервала (это не удивительно, так как исходная переменная отклика была распределена практически нормально, см. рис. 4, а в модели без предикторов остатки должны быть распределены так же как исходная переменная отклика)
+* коэффициент детерминации модели падает до нуля, стандартная ошибка резко возрастает (25519 против 7556 у полной модели)
+* на графиках зависимости предсказания от предикторов (исключенных из модели) появляется сильная зависимость, в двух случаях близкая к линейной.  
+
+Таким образом, при первичном грубом сравнении моделей следует ориентироваться прежде всего на графики остатков и значения скорректированного коэффициента детерминации и стандартной ошибки. Теперь построим частичную модель, исключая из полной модели предикторы на основе значений их фактора инфляции дисперсии.
+
+```{r, echo = TRUE, warning = FALSE}
+vif(model_full)
+model_A <- update(model_full, . ~ . -OPSLAKE)
+vif(model_A)
+model_A <- update(model_A, . ~ . -APSAB)
+vif(model_A)
+model_A <- update(model_A, . ~ . -OPRC)
+vif(model_A)
+model_A <- update(model_A, . ~ . -APMAM)
+vif(model_A)
+```
+
+Как видно из консольного вывода, последовательное применение функции vif и удаление предиктора с наибольшим значением фактора инфляции дисперсии приводит к приемлемому уровню VIF (<3) лишь после удаления всех предикторов кроме двух. Заметим, что первой мы были вынуждены удалить из модели переменную OPSLAKE, корреляция которой с откликом была максимальной (рис. 2). Кроме того, начиная с третьего шага алгоритма нам приходилось делать выбор между переменными с очень близкими значениями VIF (4.01 и 3.97; 4.01 и 3.97; 3.01 и 2.99). Это связано именно с тем, что имеются две группы предикторов, сильно скоррелированных внутри группы и практически не скоррелированных между группами.  
+Диагностика полученной частичной модели A с двумя предикторами (рис. 7) показывает уменьшение коэффициента детерминации и увеличение стандартной ошибки по сравнению с полной моделью (рис. 5). Еще более важным является появление закономерного тренда на графиках зависимости остатка от значения переменных, не включенных в модель (заметнее всего для переменной OPSLAKE, но проявяется и для других переменных). Кроме того, на параметры этой модели наиболее сильное влияние оказывают данные для 1969 года (при этом максимальное расстояние Кука возрастает по сравнению с полной моделью приблизительно в 6 раз), которые ранее были сочтены наиболее аномальными. Таким образом, построенную модель (A) следует признать недообученной. 
+
+```{r, echo = FALSE, warning = FALSE}
+model.diag(model_A, 7)
+```
+
+Разумным шагом является дополнение модели A одним из предикторов, исключенных на основании фактора инфляции дисперсии. Из соображений наличия наиболее выраженного закономерного тренда на графиках остатков (рис. 7) выбор следует делать между предикторами OPRC и OPSLAKE (были построены обе модели, названные, соответственно, B и C). Диагностические графики для этих моделей приведены на рис. 8 и 9, соответственно.  
+
+```{r, echo = FALSE, warning = FALSE}
+model_B <- update(model_A, . ~ . + OPRC)
+model.diag(model_B, 8, FALSE)
+
+model_C <- update(model_A, . ~ . + OPSLAKE)
+model.diag(model_C, 9, FALSE)
+```
+
+Базовые статистические показатели моделей B и C близки, и графики остатков в зависимости от предикторов, не включенных в модель, практически не отличаются. В целом диагностические графики остатков не показывают выраженной гетероскедастичности или закономерных паттернов, что позволяет считать их кандидатами для проверки предсказательной способности. Так как величины $r^2$ и $s$ для этих моделей очень близки к таковым для полной модели, дальнейшее усложнение полученных трехпредикторных моделей не представляется разумным.  
+Для сравнения также была построена оптимальная модель по критерию Акаике [12, с. 217]. Этот алгоритм осуществляет автоматический перебор линейных моделей, минимизируя некоторый информационный критерий. В целом, оптимизация должна приводить к одновременной минимизации стандартного отклонения и количества использованных предикторов. AIC-оптимальная модель также включает три предиктора, но их набор отличается от моделей B и C. Диагностические графики для этой модели приведены на рис. 10. Отметим, что первичные статистические показатели этой модели ($adj. r^2 = 0.919$ и $s = 7284$) оказываются даже лучше, чем у полной модели. 
+
+```{r, echo = FALSE, results = "hide", warning = FALSE}
+model_AIC <- step(object = model_null, scope = model_full$call, direction = "both", trace = 100, k = 2)
+model.diag(model_AIC, 10, FALSE)
+```
+
+
+## Проверка предсказательной способности моделей
+Окончательное решение о качестве построенных моделей в свете поставленной задачи (предсказание летнего речного стока по данным о зимних осадках) может дать только независимая проверка. С учетом специфики данных, единственной возможностью провести такую проверку является кросс-валидация [12, с. 220]. При этом из исходного набора данных случайным образом выделяют тестовое подмножество, линейная модель строится на основе оставшихся данных, а затем для тестового набора предсказываются значения с помощью построенной модели и сравниваются с реальными значениями. В данном исследовании была использована пятикратная полная кросс-валидация: из исходного набора в 43 наблюдения в тестовый набор были выделены примерно 1/5 (8 или 9 наблюдений), проведена кросс-валидация, а затем процедура повторялась еще четыре раза с иным выбором тестового набора, причем в пяти проходах каждое из наблюдений ровно один раз играло роль тестового. Результаты кросс-валидации приведены на рис. 11 в форме зависимостей предсказанных значений отклика в тестовом наборе от истинных значений.  
+
+```{r, echo = FALSE, warning = FALSE, results = 'hide'}
+model_null_cv <- cv.lm(data = water, form.lm = formula(BSAAM ~ 1), m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_91 <- ggplot(data = model_null_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_null", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_A_cv <- cv.lm(data = water, form.lm = model_A$call, m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_92 <- ggplot(data = model_A_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_A", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_B_cv <- cv.lm(data = water, form.lm = model_B$call, m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_93 <- ggplot(data = model_B_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_B", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_C_cv <- cv.lm(data = water, form.lm = model_C$call, m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_94 <- ggplot(data = model_C_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_C", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_AIC_cv <- cv.lm(data = water, form.lm = formula(model_AIC$call), m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_95 <- ggplot(data = model_AIC_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_AIC", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+model_full_cv <- cv.lm(data = water, form.lm = formula(model_full$call), m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
+gg_96 <- ggplot(data = model_full_cv, aes(x = BSAAM, y = cvpred)) +
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  scale_y_continuous(limits = c(20000, 180000)) + 
+  scale_x_continuous(limits = c(20000, 180000)) +
+  annotate("text", label = "model_full", x = 50000, y = 160000, size = 6, colour = "red", hjust = "left")
+
+gg_title_9 <- ggdraw() + draw_label("Fig. 11 Cross-validation of the models.", size = 18)
+
+plot_grid(gg_title_9, plot_grid(gg_91, gg_92, gg_93, gg_94, gg_95, gg_96, ncol = 2), ncol = 1, rel_heights = c(0.15, 1))
+```
+
+Результаты на рис. 11 подтверждают ранее сделанные предположения о том, что модель A, построенная по двум предикторам, является недообученной, так как разброс точек вокруг теоретической прямой визуально больше, чем в случае B, C и AIC (по три предиктора). Особенно хорошо это заметно в области аномально высоких значений отклика (две крайние правые точки). Описание основного облака данных моделями B, С, AIC визуально не хуже, чем для полной модели. Аномальные точки лучше всего предсказывают модели AIC и полная.  
+Чтобы количественно сопоставить эти модели, рассмотрим сводную таблицу их характеристик (табл. 2). В столбце "Prediction MSe" этой таблицы приведены среднеквадратичные отклонения кросс-валидации моделей. Отметим, что они незначительно выше, чем приведенные там же значения среднеквадратичной ошибки моделирования (Model MSe), так как при построении моделей были использованы лишь 4/5 имеющихся данных (исключен тестовый набор).  
+При переходе от модели A к выбранным вручную моделям B и C ошибка предсказания за счет учета одного дополнительного предиктора уменьшается примерно на 30%, а дальнейшее добавление еще трех предикторов (до полной модели) улучшает точность предсказания лишь на 6-11%. Важно отметить, что оптимизированная автоматически модель AIC показывает характеристики предсказания и моделирования лучше, чем полная модель, то есть полная модель является переобученной. Это отражается и в параметрах моделирования - коэффициент детерминации для полной модели лишь немного выше, чем для модели AIC, но за счет большего количества параметров значения скорректированного коэффициента детерминации и среднеквадратичной ошибки моделирования оказываются выше.   
+
+```{r, echo = FALSE, warning = FALSE}
+full_sum <- cbind(r.sq = summary(model_full)$r.squared, adj.r.sq = summary(model_full)$adj.r.squared, model.s = summary(model_full)$sigma, model.df = summary(model_full)$df[2], cv.s = sqrt(attributes(model_full_cv)$ms))
+A_sum <- cbind(r.sq = summary(model_A)$r.squared, adj.r.sq = summary(model_A)$adj.r.squared, model.s = summary(model_A)$sigma, model.df = summary(model_A)$df[2], cv.s = sqrt(attributes(model_A_cv)$ms))
+B_sum <- cbind(r.sq = summary(model_B)$r.squared, adj.r.sq = summary(model_B)$adj.r.squared, model.s = summary(model_B)$sigma, model.df = summary(model_B)$df[2], cv.s = sqrt(attributes(model_B_cv)$ms))
+C_sum <- cbind(r.sq = summary(model_C)$r.squared, adj.r.sq = summary(model_C)$adj.r.squared, model.s = summary(model_C)$sigma, model.df = summary(model_C)$df[2], cv.s = sqrt(attributes(model_C_cv)$ms))
+null_sum <- cbind(r.sq = summary(model_null)$r.squared, adj.r.sq = summary(model_null)$adj.r.squared, model.s = summary(model_null)$sigma, model.df = summary(model_null)$df[2], cv.s = sqrt(attributes(model_null_cv)$ms))
+AIC_sum <- cbind(r.sq = summary(model_AIC)$r.squared, adj.r.sq = summary(model_AIC)$adj.r.squared, model.s = summary(model_AIC)$sigma, model.df = summary(model_AIC)$df[2], cv.s = sqrt(attributes(model_AIC_cv)$ms))
+
+overall <- (rbind(null_sum, A_sum, B_sum, C_sum, AIC_sum, full_sum))
+rownames(overall) <- c("Null", "A", "B", "C", "AIC", "Full")
+colnames(overall) <- c("r-squared", "Adj. r-squared", "Model MSe", "Model df", "Prediction MSe")
+
+kable(overall, caption = "Table 2. Parameters of the built models.")
+```
+
+```{r, echo = FALSE, warning = FALSE}
+setwd(old_dir)
+theme_set(old)
+```
+
+# Выводы
+
+Проведенный анализ показал, что величина годового стока значимо связана с величиной зимних осадков, причем эта связь может быть описана линейной регрессионной моделью. Приемлемое качество моделирования (для лучшей модели AIC среднеквадратичная ошибка предсказания 10.6% от медианного значения выборки) было достигнуто с использованием моделей с тремя предикторами. Модель с двумя предикторами является недообученной (ошибка предсказания 17.6%), а увеличение количества предикторов в модели даже до шести делает ее переобученной (ошибка предсказания 11.5%). 
+
+# Список литературы
+
+[1] https://cran.r-project.org/web/packages/alr4/index.html
+[2] https://cran.r-project.org/web/packages/tidyverse/index.html  
+[3] https://cran.r-project.org/web/packages/ggplot2/index.html  
+[4] https://cran.r-project.org/web/packages/dplyr/index.html  
+[5] https://cran.r-project.org/web/packages/tidyr/index.html  
+[6] https://cran.r-project.org/web/packages/cowplot/index.html  
+[7] https://cran.r-project.org/web/packages/qqplotr/index.html  
+[8] https://cran.r-project.org/web/packages/DAAG/index.html  
+[9] https://cran.r-project.org/web/packages/GGally/index.html  
+[10] https://cran.r-project.org/web/packages/knitr/index.html  
+[11] https://cran.r-project.org/web/packages/alr4/alr4.pdf  
+[12] S. Weisberg, Applied linear regression, 3rd ed., Wiley-Interscience, 2005.  
+[13] https://en.wikipedia.org/w/index.php?title=Climate_of_California&section=1  
+[14] https://en.wikipedia.org/wiki/Stepwise_regression  
