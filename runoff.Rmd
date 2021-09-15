@@ -6,6 +6,7 @@ output:
   pdf_document:
     keep_tex: no
     latex_engine: lualatex
+fontsize: 10pt
 header-includes:
 - \usepackage{fontspec}
 - \setmainfont{FreeSerif}
@@ -31,7 +32,7 @@ knitr::opts_chunk$set(fig.width=12, fig.height=8)
 
 Данные для анализа были загружены из пакета `alr4` `r packageVersion("alr4")` [1] (датасет `water`). В ходе анализа были использованы пакеты `tidyverse` `r packageVersion("tidyverse")` [2] (набор пакетов для основных операций по преобразованию и визуализации данных, который включает, в частности, пакеты `ggplot2` `r packageVersion("ggplot2")` [3], `dplyr` `r packageVersion("dplyr")` и `tidyr` `r packageVersion("tidyr")` [5]), `cowplot` `r packageVersion("cowplot")` [6] (организация нескольких графиков `ggplot2` на рисунке), `qqplotr` `r packageVersion("qqplotr")` [7] (расширение `ggplot2`; для построения квантильных графиков), `DAAG` `r packageVersion("DAAG")` [8] (для проведения кросс-валидации), `GGally` `r packageVersion("GGally")` [9] (расширение `ggplot2`; для попарного сравнения наборов данных) и `knitr` `r packageVersion("knitr")` [10] (оформление таблицы в отчете).  
 
-Анализ состоял из следующих основных шагов (детали их реализации прокомментированы в файле скрипта `runoff.R`, а результаты описаны в разделе "Результаты и обсуждение"):  
+Анализ состоял из следующих шагов (их реализация прокомментирована в файле скрипта `runoff.R`):  
 
 * загрузка данных  
 * разведочный анализ данных: ознакомление со структурой, проверка на пропуски, визуализация, проверка на нормальность, выявление выбросов и корреляций  
@@ -43,116 +44,30 @@ knitr::opts_chunk$set(fig.width=12, fig.height=8)
 source("runoff.R", local = knitr::knit_global())
 ```
 
+\newpage
+
 # Результаты и обсуждение
 
 ## Описание данных
-```{r, echo = FALSE, message = FALSE, warning = FALSE, results = "hide"}
-old_dir <- getwd()
-setwd("C:/Users/Evgeny/Dropbox/_projects/Runoff")
-library(tidyverse)                # набор пакетов для анализа и визуализации данных
-library(cowplot)                  # несколько графиков на одном поле
-library(alr4)                     # содержит датасет water
-library(DAAG)                     # cross-validation
-library(qqplotr)                  # qqplot in ggplot2
-library(GGally)                   # визуализация парного сравнения переменных
-library(gridExtra)                # включение объектов в график
-library(knitr)
-old <- theme_get()
-my_theme <-  theme_bw() +
-  theme(axis.text = element_text(size = 12)) +
-  theme(plot.title = element_text(size = 18, hjust = 0.5)) +
-  theme(axis.title = element_text(size = 16), legend.position = "none")
-theme_set(my_theme)
-data(water)
 
-model.diag <- function(x, fig_n = 999, printing = FALSE) # x - объект lm, fig_n - номер рисунка (в подписи),
-                                                         # printing - печатать ли таблицы
-{
-  # диагностический датафрейм для модели x
-  x_diag <- fortify(x)
-  x_diag_long <- x_diag %>% mutate(Year = water$Year) %>% gather(colnames(x_diag)[colnames(x_diag) != "Year"], key = "key", value = "value")
-  
-  # критическое значение расстояния Кука
-  cooksd_crit <- 4 / (nrow(x_diag) - length(coef(x_diag)))
-  
-  # таблица отскакивающих расстояний Кука
-  outliers_cooks <- x_diag_long %>% filter(key == ".cooksd") %>% filter (value > cooksd_crit) %>% select(-key) %>% transmute(Year = Year, .cooksd = value)
-  
-  
-  # график расстояния Кука
-  gg_1 <- ggplot(x_diag, aes(x = water$Year, y = .cooksd)) +
-    geom_bar(stat = 'identity') + coord_cartesian(ylim = c(0, max(x_diag$.cooksd))) +
-    geom_hline(yintercept = cooksd_crit, linetype = 2) +
-    labs(x = "Year")
-  
-  # график остатков от предсказанных значений  
-  gg_2 <- ggplot(data = x_diag, aes(x = .fitted, y = .stdresid)) +
-    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)
-  
-  # графики стандартизированных остатков от значений предикторов
-  gg_3 <- ggplot(data = x_diag, aes(x = water$APMAM, y = .stdresid)) +
-    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'APMAM')
-  gg_4 <- ggplot(data = x_diag, aes(x = water$APSAB, y = .stdresid)) +
-    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'APSAB')
-  gg_5 <- ggplot(data = x_diag, aes(x = water$APSLAKE, y = .stdresid)) +
-    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'APSLAKE')
-  gg_6 <- ggplot(data = x_diag, aes(x = water$OPBPC, y = .stdresid)) +
-    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'OPBPC') 
-  gg_7 <- ggplot(data = x_diag, aes(x = water$OPRC, y = .stdresid)) +
-    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)  + labs(x = 'OPRC')
-  gg_8 <- ggplot(data = x_diag, aes(x = water$OPSLAKE, y = .stdresid)) +
-    geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess) + labs(x = 'OPSLAKE')
-  
-  # квантильный график стандартизированных отклонений
-  gg_9 <- ggplot(data.frame(x_diag), aes(sample = .stdresid), color = "black") +
-    stat_qq_point(distribution = "norm") +
-    stat_qq_line(distribution = "norm") +
-    stat_qq_band(distribution = "norm")
-  
-  # вызов модели
-  call <- paste(formula(x)[2], formula(x)[3], sep=' ~ ')
-  # скорректированный коэффициент детерминации
-  adj_r2 <- summary(x)$adj.r.squared
-  # степени свободы остатков
-  df <- summary(x)$df[2]
-  # стандартное отклонение
-  sigma <- summary(x)$sigma
-  
-  # формируем рисунок и заголовки
-  composite <- plot_grid(gg_1, gg_2, gg_9, gg_3, gg_4, gg_5, gg_6, gg_7, gg_8, ncol = 3)
-  title_1 <- ggdraw() + draw_label(paste("Fig. ", fig_n, " Model: ", call, sep = ""), size = 15)
-  title_2 <- ggdraw() + draw_label(paste("adj. r-sq. = ", round(adj_r2, digits = 3), "; s = ", round(sigma, digits = 0), " (df = ", df, ")",   sep = ""), size = 10, fontface = "bold", color = "red")
-  res <- plot_grid(title_1, title_2, composite, nrow = 3, rel_heights = c(0.15, 0.12, 3))
-  
-  if (printing == TRUE) {
-    # отскакивающие расстояния Кука
-    print("Table of Cook's distance outliers")
-    print.data.frame(outliers_cooks, row.names = FALSE)
-    # коэффициенты модели
-    print("Table of model coefficients")
-    print(round(summary(x)$coef, digits = 3))
-  }
-  
-  return(res)
-}
+Согласно описанию датасета `water` [11, с. 54], переменная `Year` содержит год наблюдения, переменная `BSAAM` - величину стока (в акро-футах), а остальные шесть переменных (`APMAM`, `APSAB`, `APSLAKE`, `OPBPC`, `OPRC`, `OPSLAKE`) - величины зимних осадков в различных точках местности. О географической близости точек наблюдения осадков и стока информации нет.
 
-
-```
-
-Согласно описанию датасета water [11, с. 54], переменная Year содержит год наблюдения, переменная BSAAM содержит величину стока (в акро-футах), а остальные шесть переменных (APMAM, APSAB, APSLAKE, OPBPC, OPRC, OPSLAKE) содержат величины зимних осадков в различных точках местности. О географической близости точек наблюдения осадков и стока информации нет.
 ```{r, echo = TRUE}
-str(water)
+str(water, vec.len=3)
 head(water)
 ```
 
-Загруженные данные имеют ожидаемую структуру: это таблица, содержащая 8 числовых переменных (столбцы) для 43 наблюдений (строки). 
+Загруженные данные имеют ожидаемую структуру: это таблица, содержащая 8 числовых переменных (столбцы) для 43 наблюдений (строки).
+
 ```{r, echo = TRUE}
 colSums(is.na(summary(water)))
 (max(water$Year) - min(water$Year)) == nrow(water) - 1
 is.element(FALSE, seq(min(water$Year), max(water$Year)) %in% water$Year)
 ```
 
-Пропущенных значений в датасете нет. Размах данных в столбце Year (разница между максимальным и минимальным значениями) ровно на единицу меньше количества строк в датасете, причем каждое целое число из последовательности между первым и последним годами выборки встречается в столбце данных Year. Можно заключить поэтому, что все переменные измерены для каждого года из анализируемого диапазона, причем каждому году соответствует строго одно наблюдение.  
+Пропущенных значений в датасете нет. Размах данных в столбце `Year` (разница между максимальным и минимальным значениями) ровно на единицу меньше количества строк в датасете, причем каждое целое число из последовательности между первым и последним годами выборки встречается в столбце данных `Year`. Можно заключить поэтому, что все переменные измерены для каждого года из анализируемого диапазона, причем каждому году соответствует строго одно наблюдение.  
+
+\newpage
 
 ## Разведочный анализ
 Цели разведочного анализа данных:
@@ -396,11 +311,6 @@ rownames(overall) <- c("Null", "A", "B", "C", "AIC", "Full")
 colnames(overall) <- c("r-squared", "Adj. r-squared", "Model MSe", "Model df", "Prediction MSe")
 
 kable(overall, caption = "Table 2. Parameters of the built models.")
-```
-
-```{r, echo = FALSE, warning = FALSE}
-setwd(old_dir)
-theme_set(old)
 ```
 
 # Выводы
