@@ -1,4 +1,4 @@
-#----Предварительные операции.-------------------------------------------------------
+#----Предварительные операции.-------------------------------------------------
 
 library(tidyverse)                # набор пакетов для анализа и визуализации данных
 library(cowplot)                  # несколько графиков на одном поле
@@ -7,34 +7,34 @@ library(DAAG)                     # cross-validation
 library(qqplotr)                  # qqplot в стиле ggplot2
 library(GGally)                   # визуализация парного сравнения переменных
 library(knitr)                    # формирование таблиц для отчета
+library(kableExtra)
 
 # установка общей темы для рисунков
-old <- theme_get()
 my_theme <-  theme_bw() +
     theme(axis.text = element_text(size = 12)) +
     theme(plot.title = element_text(size = 18, hjust = 0.5)) +
     theme(axis.title = element_text(size = 16), legend.position = "none")
 theme_set(my_theme)
 
-#----Загрузка данных.-----------------------------------------------------------------
+#----Загрузка данных.----------------------------------------------------------
 
 # исходные данные для анализа находятся в датасете water
 data(water)                       
 
+#----Анализ распределения предикторов и определение отскоков.------------------
 
+# Создаем вспомогательный датафрейм в длинном формате
+# и добавляем колонку стандартизованных значений
+water_long <- water %>% 
+    gather("APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM", key = "key", value = "value") %>% 
+    group_by(key) %>% 
+    mutate (scale_value = scale(value))
 
+# здесь и далее - объекты, которые объединяются с помощью plot_grid, называются gg_XY,
+# заголовок - gg_title_X, где x - номер рисунка, Y - идентификатор графика на рисунке
 
-# Анализ распределения предикторов по диаграммам "ящик с усами" и определение отскоков.-----------------------------------
-# Для облегчения этих (и некоторых дальнейших) операций создан дополнительный датафрейм----------------------------------- 
-# с исходными данными в длинном формате (water_long),--------------------------------------------------------------------- 
-# в который добавлены значения стандартизованных величин предикторов и отклика.-------------------------------------------
-# ------------------------------------------------------------------------------------------------------------------------
-
-
-# переводим данные в длинный формат и добавляем колонку стандартизованных значений
-water_long <- water %>% gather("APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM", key = "key", value = "value") %>% group_by(key) %>% mutate (scale_value = scale(value))
-
-# диаграммы для исходных данных
+#----графики для рис. 1
+# боксплот для исходных данных
 gg_1a <- ggplot(water_long %>% filter(key != "BSAAM"), aes(x = key, y = value)) +
     geom_boxplot() +
     labs(x = "Location", y = "Precipitation") + 
@@ -43,38 +43,36 @@ gg_1a <- ggplot(water_long %>% filter(key != "BSAAM"), aes(x = key, y = value)) 
 # критическое значение t-статистики для числа наблюдений из датасета
 t_crit <- qt(.975, df = nrow(water) - 1)
 
-# диаграммы для автошкалированных данных
+# боксплот для автошкалированных данных
 gg_1b <- ggplot(water_long %>% filter(key != "BSAAM"), aes(x = key, y = scale_value)) +
     geom_boxplot() +
     labs(x = 'Location', y = 'Std. precipitation') +
     scale_y_continuous(limits = c(-2.5, 4.4)) +
     geom_hline(yintercept = t_crit, linetype = 2) +
     geom_hline(yintercept = -t_crit, linetype = 2) +
-    annotate("text", label = "b) Autoscaled predictors", x = 0.5, y = 4.2, size = 5, colour = "red", hjust = "left")
+    annotate("text", label = "b) Std.predictors", x = 0.5, y = 4.2, size = 5, colour = "red", hjust = "left")
 
 # общий заголовок
-gg_title_1 <- ggdraw() + draw_label("Fig. 1 Distribution of values of predictors.", size = 18)
+gg_title_1 <- ggdraw() + draw_label("Fig. 1 Predictors distribution.", size = 18)
 
-# формируем общий рис. 1
-# здесь и далее - объекты, которые объединяются с помощью plot_grid, называются gg_XY,
-# заголовок - gg_title_X, где x - номер рисунка, Y - идентификатор графика на рисунке
-plot_grid(gg_title_1, gg_1a, gg_1b, nrow = 3, rel_heights = c(0.15, 1, 1))
 
+#----графики для рис. 2
 # создаем график для парного сравнения предикторов
 ggpairs(water[ , colnames(water) %in% c("APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM")], lower = list(continuous = "smooth_loess"), title = "Fig. 2. Pairwise comparison of parameters.", axisLabels = "none")
 
-# создаем вектор с годом, когда наблюдались выбросы (по одному значению на КАЖДЫЙ отскок!)
+# создаем вектор с годами, когда наблюдались выбросы (по одному значению на КАЖДЫЙ отскок!)
 outliers_y <- water_long$Year[water_long$scale_value > t_crit & water_long$key != "BSAAM"]
-table(outliers_y)
 
 # создаем датафрейм, в котором будут ВСЕ значения параметров в годы, когда был хоть один отскок
-data.frame(water_long[water_long$Year %in% outliers_y, ] %>% select(-value) %>% spread(key = key, value = scale_value)) %>% select("Year", "APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM") %>% round(digits = 2)
+outliers_summary <- data.frame(water_long[water_long$Year %in% outliers_y, ] %>% 
+                                   select(-value) %>% 
+                                   spread(key = key, value = scale_value)) %>% 
+    select("Year", "APMAM", "APSAB", "APSLAKE", "OPBPC", "OPRC", "OPSLAKE", "BSAAM") %>% 
+    round(digits = 2)
 
 
 
-# Построение аременных рядов для стандартизованных предикторов.-----------------------------------------------------------
-# ------------------------------------------------------------------------------------------------------------------------
-
+#----Построение аременных рядов для стандартизованных предикторов--------------
 ggplot(water_long %>% filter(key != "BSAAM"), aes(x = Year, y = scale_value), color = "black") +
     geom_line() + geom_point() + geom_hline(yintercept = t_crit, linetype = 2) +
     facet_wrap( ~ key, ncol = 3, scales = "free") +
@@ -82,8 +80,7 @@ ggplot(water_long %>% filter(key != "BSAAM"), aes(x = Year, y = scale_value), co
 
 
 
-# Графики для разведочного анализа переменной отклика.--------------------------------------------------------------------
-# ------------------------------------------------------------------------------------------------------------------------
+#----Графики для разведочного анализа переменной отклика-----------------------
 
 # заголовок рисунка
 gg_title_4 <- ggdraw() + draw_label("Fig. 4 Distributions for response variable.", size = 18)
@@ -108,13 +105,8 @@ gg_4c <- ggplot(water_long %>% filter(key == "BSAAM"), aes(sample = scale_value)
     stat_qq_band() +
     annotate("text", label = "c) quantile-quantile plot", x = -2.5, y = 2.5, size = 6, colour = "red", hjust = "left")
 
-# создаем окончательный рис. 4
-plot_grid(gg_title_4, plot_grid(gg_4a, gg_4b, ncol = 2, rel_widths = c(1, 1)), gg_4c, nrow = 3, rel_heights = c(0.15, 1, 1))
 
-
-
-# Анализ корреляции переменной отклика с каждым из предикторов.----------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------------------
+#----Анализ корреляции переменной отклика с каждым из предикторов.-------------
 
 # формируем данные для таблицы статистики корреляций
 cor_stat <- data.frame(param = character(0), corr = numeric(0), t = numeric(0), p = integer(0))
@@ -124,27 +116,33 @@ for (i in 2:7) {
 }
 rownames(cor_stat) <- cor_stat$param
 cor_stat <- signif(cor_stat[, 2:4], digits = 4)
-kable(cor_stat, caption = "Table 1. Correlations of response with predictors")
 
 
+#----Функция для вывода диагностик модели типа lm.-----------------------------
 
-# Функция для вывода диагностик модели типа lm. -------------------------------------------------------------------------
-# По умолчанию выводятся только диагностические графики, ----------------------------------------------------------------
-# опционально можно также вывести таблицу отскакивающих расстояний Кука и таблицу коэффициентов модели.------------------
-# -----------------------------------------------------------------------------------------------------------------------
+# По умолчанию выводятся только диагностические графики,-----------------------
+# опционально можно также вывести таблицу отскакивающих расстояний Кука-------- 
+# и таблицу коэффициентов модели.----------------------------------------------
 
-model.diag <- function(x, fig_n = 999, printing = FALSE) # x - объект lm, fig_n - номер рисунка (в подписи),
+model.diag <- function(x, fig_n = 999, printing = FALSE) 
+    # x - объект lm, fig_n - номер рисунка (в подписи),
     # printing - печатать ли таблицы
 {
     # диагностический датафрейм для модели x
     x_diag <- fortify(x)
-    x_diag_long <- x_diag %>% mutate(Year = water$Year) %>% gather(colnames(x_diag)[colnames(x_diag) != "Year"], key = "key", value = "value")
+    x_diag_long <- x_diag %>% 
+        mutate(Year = water$Year) %>% 
+        gather(colnames(x_diag)[colnames(x_diag) != "Year"], key = "key", value = "value")
     
     # критическое значение расстояния Кука
     cooksd_crit <- 4 / (nrow(x_diag) - length(coef(x_diag)))
     
     # таблица отскакивающих расстояний Кука
-    outliers_cooks <- x_diag_long %>% filter(key == ".cooksd") %>% filter (value > cooksd_crit) %>% select(-key) %>% transmute(Year = Year, .cooksd = value)
+    outliers_cooks <- x_diag_long %>% 
+        filter(key == ".cooksd") %>% 
+        filter (value > cooksd_crit) %>% 
+        select(-key) %>% 
+        transmute(Year = Year, .cooksd = value)
     
     
     # график расстояния Кука
@@ -155,7 +153,9 @@ model.diag <- function(x, fig_n = 999, printing = FALSE) # x - объект lm, 
     
     # график остатков от предсказанных значений  
     gg_2 <- ggplot(data = x_diag, aes(x = .fitted, y = .stdresid)) +
-        geom_point() + geom_hline(yintercept = 0) + geom_smooth(method = loess)
+        geom_point() + 
+        geom_hline(yintercept = 0) + 
+        geom_smooth(method = loess)
     
     # графики стандартизированных остатков от значений предикторов
     gg_3 <- ggplot(data = x_diag, aes(x = water$APMAM, y = .stdresid)) +
@@ -188,8 +188,13 @@ model.diag <- function(x, fig_n = 999, printing = FALSE) # x - объект lm, 
     
     # формируем рисунок и заголовки
     composite <- plot_grid(gg_1, gg_2, gg_9, gg_3, gg_4, gg_5, gg_6, gg_7, gg_8, ncol = 3)
-    title_1 <- ggdraw() + draw_label(paste("Fig. ", fig_n, " Model: ", call, sep = ""), size = 15)
-    title_2 <- ggdraw() + draw_label(paste("adj. r-sq. = ", round(adj_r2, digits = 3), "; s = ", round(sigma, digits = 0), " (df = ", df, ")",   sep = ""), size = 10, fontface = "bold", color = "red")
+    title_1 <- ggdraw() + 
+        draw_label(paste("Fig. ", fig_n, " Model: ", call, sep = ""), size = 15)
+    title_2 <- ggdraw() + 
+        draw_label(paste("adj. r-sq. = ", round(adj_r2, digits = 3), 
+                         "; s = ", round(sigma, digits = 0), 
+                         " (df = ", df, ")",   sep = ""), 
+                   size = 10, fontface = "bold", color = "red")
     res <- plot_grid(title_1, title_2, composite, nrow = 3, rel_heights = c(0.15, 0.12, 3))
     
     if (printing == TRUE) {
@@ -204,23 +209,13 @@ model.diag <- function(x, fig_n = 999, printing = FALSE) # x - объект lm, 
     return(res)
 }
 
-
-
-
-# Построение полной и нулевой моделей и их диагностических графиков.------------------------------------------------------
-# ------------------------------------------------------------------------------------------------------------------------
-
-
+# Построение полной и нулевой моделей
 model_full <- lm(BSAAM ~ APMAM + APSAB + APSLAKE + OPBPC + OPRC + OPSLAKE, data = water)
-model.diag(model_full, fig_n = 5, printing = TRUE)
 model_null <- lm(BSAAM ~ 1, data = water)
-model.diag(model_null, fig_n = 6, printing = FALSE)
 
 
 
-# Сокращенная модель из полной по фактору инфляции дисперсии и построение ее диагностики.---------------------------------
-# ------------------------------------------------------------------------------------------------------------------------
-
+# Сокращенная модель из полной по фактору инфляции дисперсии (модель A)
 vif(model_full)
 model_A <- update(model_full, . ~ . -OPSLAKE)
 
@@ -238,28 +233,18 @@ model.diag(model_A, 7)
 
 
 
-# Построение и диагностика моделей, включающих один из ранее исключенных предикторов.--------------------------------------
-# -------------------------------------------------------------------------------------------------------------------------
-
+# Построение и диагностика моделей, включающих один из ранее исключенных предикторов.
 model_B <- update(model_A, . ~ . + OPRC)
-model.diag(model_B, 8, FALSE)
-
 model_C <- update(model_A, . ~ . + OPSLAKE)
-model.diag(model_C, 9, FALSE)
 
 
 
-# Построение оптимальной линейной модели по критерию Акаике.--------------------------------------------------------------
-# ------------------------------------------------------------------------------------------------------------------------
-
+# Построение оптимальной линейной модели по критерию Акаике
 model_AIC <- step(object = model_null, scope = model_full$call, direction = "both", trace = 100, k = 2)
-model.diag(model_AIC, 10, FALSE)
 
 
 
-# Кросс-валидация моделей и график результатов.---------------------------------------------------------------------------
-# ------------------------------------------------------------------------------------------------------------------------
-
+# Кросс-валидация моделей и график результатов
 model_null_cv <- cv.lm(data = water, form.lm = formula(BSAAM ~ 1), m = 5, dots = 0, seed = 123, plotit = FALSE, printit = TRUE)
 gg_91 <- ggplot(data = model_null_cv, aes(x = BSAAM, y = cvpred)) +
     geom_point() + geom_abline(slope = 1, intercept = 0) +
@@ -304,13 +289,8 @@ gg_96 <- ggplot(data = model_full_cv, aes(x = BSAAM, y = cvpred)) +
 
 gg_title_9 <- ggdraw() + draw_label("Fig. 11 Cross-validation of the models.", size = 18)
 
-plot_grid(gg_title_9, plot_grid(gg_91, gg_92, gg_93, gg_94, gg_95, gg_96, ncol = 2), ncol = 1, rel_heights = c(0.15, 1))
 
-
-
-# Создание сводной таблицы характеристик моделей.--------------------------------------------------------------------------
-# -------------------------------------------------------------------------------------------------------------------------
-
+# Создание сводной таблицы характеристик моделей.
 full_sum <- cbind(adj.r.sq = summary(model_full)$adj.r.squared, model.s = summary(model_full)$sigma, model.df = summary(model_full)$df[2], cv.s = sqrt(attributes(model_full_cv)$ms))
 A_sum <- cbind(adj.r.sq = summary(model_A)$adj.r.squared, model.s = summary(model_A)$sigma, model.df = summary(model_A)$df[2], cv.s = sqrt(attributes(model_A_cv)$ms))
 B_sum <- cbind(adj.r.sq = summary(model_B)$adj.r.squared, model.s = summary(model_B)$sigma, model.df = summary(model_B)$df[2], cv.s = sqrt(attributes(model_B_cv)$ms))
@@ -321,5 +301,3 @@ AIC_sum <- cbind(adj.r.sq = summary(model_AIC)$adj.r.squared, model.s = summary(
 overall <- (rbind(null_sum, A_sum, B_sum, C_sum, AIC_sum, full_sum))
 rownames(overall) <- c("Null", "A", "B", "C", "AIC", "Full")
 colnames(overall) <- c("Adj. r-squared", "Model MSe", "Model df", "Prediction MSe")
-
-kable(overall, caption = "Table 2. Parameters of the built models.")
